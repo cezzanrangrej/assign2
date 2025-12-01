@@ -3,7 +3,7 @@
  * Interactive frequency spectrum visualization with client-side FFT computation
  * Features: Real-time FFT, log scale, peak detection, frequency annotations
  */
-import React, { useRef, useMemo, useCallback } from 'react';
+import React, { useRef, useMemo, useCallback, useState, useEffect } from 'react';
 import { Line } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
@@ -19,8 +19,8 @@ import {
 } from 'chart.js';
 import zoomPlugin from 'chartjs-plugin-zoom';
 import annotationPlugin from 'chartjs-plugin-annotation';
-import { Activity, Zap, TrendingUp, Info } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { Activity, Zap, TrendingUp, Info, Maximize2, ZoomIn, ZoomOut, RotateCcw, X } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 import FFT from 'fft.js';
 
 // Register Chart.js plugins
@@ -120,6 +120,29 @@ export default function FFTChart({
   className = '',
 }) {
   const chartRef = useRef(null);
+  const fullscreenChartRef = useRef(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Handle ESC key to close fullscreen
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && isFullscreen) {
+        setIsFullscreen(false);
+      }
+    };
+    if (isFullscreen) {
+      document.addEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = 'hidden';
+    }
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = '';
+    };
+  }, [isFullscreen]);
+
+  const toggleFullscreen = useCallback(() => {
+    setIsFullscreen(prev => !prev);
+  }, []);
 
   // Compute FFT (either use precomputed or calculate client-side)
   const fftData = useMemo(() => {
@@ -310,7 +333,151 @@ export default function FFTChart({
     chartRef.current?.resetZoom();
   };
 
+  const handleFullscreenZoomIn = () => {
+    fullscreenChartRef.current?.zoom(1.2);
+  };
+
+  const handleFullscreenZoomOut = () => {
+    fullscreenChartRef.current?.zoom(0.8);
+  };
+
+  const handleFullscreenResetZoom = () => {
+    fullscreenChartRef.current?.resetZoom();
+  };
+
+  // Fullscreen modal content
+  const renderFullscreenModal = () => (
+    <AnimatePresence>
+      {isFullscreen && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.2 }}
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ backgroundColor: 'rgba(0, 0, 0, 0.9)' }}
+          onClick={(e) => e.target === e.currentTarget && setIsFullscreen(false)}
+        >
+          <motion.div
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.9, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="w-[95vw] h-[90vh] glass-card p-6 relative"
+          >
+            {/* Fullscreen Header */}
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-1 h-6 rounded-sm" style={{ background: '#12239E' }} />
+                <h3 className="text-lg font-semibold text-white uppercase tracking-wide">{title}</h3>
+                <span className="px-3 py-1 text-sm font-medium rounded" style={{ background: 'rgba(18, 35, 158, 0.15)', color: '#12239E' }}>
+                  {logScale ? 'Log Scale' : 'Linear'}
+                </span>
+              </div>
+
+              {/* Fullscreen Controls */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleFullscreenZoomIn}
+                  className="p-2 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
+                  title="Zoom In"
+                >
+                  <ZoomIn size={20} />
+                </button>
+                <button
+                  onClick={handleFullscreenZoomOut}
+                  className="p-2 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
+                  title="Zoom Out"
+                >
+                  <ZoomOut size={20} />
+                </button>
+                <button
+                  onClick={handleFullscreenResetZoom}
+                  className="p-2 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
+                  title="Reset Zoom"
+                >
+                  <RotateCcw size={20} />
+                </button>
+                <div className="w-px h-6 bg-slate-700 mx-2" />
+                <button
+                  onClick={() => setIsFullscreen(false)}
+                  className="p-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-400 hover:text-red-300 transition-colors"
+                  title="Close Fullscreen (ESC)"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+
+            {/* Fullscreen Stats */}
+            {stats && (
+              <div className="grid grid-cols-4 gap-4 mb-4">
+                <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-slate-800/50">
+                  <Zap size={18} className="text-[#E66C37]" />
+                  <div>
+                    <p className="text-xs text-slate-500">Dominant Frequency</p>
+                    <p className="text-lg font-semibold text-white">{stats.dominantFreq} Hz</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-slate-800/50">
+                  <Activity size={18} className="text-[#12239E]" />
+                  <div>
+                    <p className="text-xs text-slate-500">Peak Magnitude</p>
+                    <p className="text-lg font-semibold text-white">{stats.dominantMag}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-slate-800/50">
+                  <TrendingUp size={18} className="text-green-500" />
+                  <div>
+                    <p className="text-xs text-slate-500">Total Energy</p>
+                    <p className="text-lg font-semibold text-white">{stats.totalEnergy}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-slate-800/50">
+                  <Info size={18} className="text-[#6B007B]" />
+                  <div>
+                    <p className="text-xs text-slate-500">Detected Peaks</p>
+                    <p className="text-lg font-semibold text-white">{stats.numPeaks}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Fullscreen Chart */}
+            <div className="h-[calc(100%-160px)]">
+              <Line ref={fullscreenChartRef} data={chartData} options={options} />
+            </div>
+
+            {/* Peak Legend in Fullscreen */}
+            {showPeaks && displayData.peaks.length > 0 && (
+              <div className="absolute bottom-16 left-6 flex flex-wrap gap-2">
+                {displayData.peaks.map((peak, idx) => (
+                  <span
+                    key={idx}
+                    className="px-3 py-1.5 text-sm rounded"
+                    style={{
+                      background: idx === 0 ? 'rgba(230, 108, 55, 0.15)' : 'rgba(107, 0, 123, 0.15)',
+                      color: idx === 0 ? '#E66C37' : '#6B007B'
+                    }}
+                  >
+                    {peak.frequency.toFixed(0)} Hz ({peak.magnitude.toExponential(1)})
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Fullscreen Help text */}
+            <p className="absolute bottom-4 left-1/2 -translate-x-1/2 text-sm text-slate-500">
+              Drag to select region • Scroll to zoom • Ctrl+drag to pan • Press ESC to close
+            </p>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+
   return (
+    <>
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
@@ -331,6 +498,13 @@ export default function FFTChart({
           className="px-3 py-1.5 text-xs font-medium rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
         >
           Reset Zoom
+        </button>
+        <button
+          onClick={toggleFullscreen}
+          className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+          title="Fullscreen"
+        >
+          <Maximize2 size={16} />
         </button>
       </div>
 
@@ -397,5 +571,9 @@ export default function FFTChart({
         </div>
       )}
     </motion.div>
+
+    {/* Fullscreen Modal */}
+    {renderFullscreenModal()}
+    </>
   );
 }

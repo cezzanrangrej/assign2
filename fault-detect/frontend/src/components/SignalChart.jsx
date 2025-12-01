@@ -3,7 +3,7 @@
  * Interactive time-series visualization with pan/zoom, crosshair, and annotations
  * Features: Real-time updates, gradient fills, tooltips, zoom controls
  */
-import React, { useRef, useEffect, useMemo } from 'react';
+import React, { useRef, useEffect, useMemo, useState, useCallback } from 'react';
 import { Line } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
@@ -18,8 +18,8 @@ import {
 } from 'chart.js';
 import zoomPlugin from 'chartjs-plugin-zoom';
 import annotationPlugin from 'chartjs-plugin-annotation';
-import { ZoomIn, ZoomOut, RotateCcw, Maximize2 } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { ZoomIn, ZoomOut, RotateCcw, Maximize2, Minimize2, X } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 
 // Register Chart.js plugins
 ChartJS.register(
@@ -47,6 +47,29 @@ export default function SignalChart({
   className = '',
 }) {
   const chartRef = useRef(null);
+  const fullscreenChartRef = useRef(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Handle ESC key to close fullscreen
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && isFullscreen) {
+        setIsFullscreen(false);
+      }
+    };
+    if (isFullscreen) {
+      document.addEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = 'hidden';
+    }
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = '';
+    };
+  }, [isFullscreen]);
+
+  const toggleFullscreen = useCallback(() => {
+    setIsFullscreen(prev => !prev);
+  }, []);
 
   // Generate gradient for the line fill
   const getGradient = (ctx, chartArea) => {
@@ -224,7 +247,99 @@ export default function SignalChart({
     chartRef.current?.resetZoom();
   };
 
+  const handleFullscreenZoomIn = () => {
+    fullscreenChartRef.current?.zoom(1.2);
+  };
+
+  const handleFullscreenZoomOut = () => {
+    fullscreenChartRef.current?.zoom(0.8);
+  };
+
+  const handleFullscreenResetZoom = () => {
+    fullscreenChartRef.current?.resetZoom();
+  };
+
+  // Fullscreen modal content
+  const renderFullscreenModal = () => (
+    <AnimatePresence>
+      {isFullscreen && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.2 }}
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ backgroundColor: 'rgba(0, 0, 0, 0.9)' }}
+          onClick={(e) => e.target === e.currentTarget && setIsFullscreen(false)}
+        >
+          <motion.div
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.9, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="w-[95vw] h-[90vh] glass-card p-6 relative"
+          >
+            {/* Fullscreen Header */}
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-1 h-6 rounded-sm" style={{ background: color }} />
+                <h3 className="text-lg font-semibold text-white uppercase tracking-wide">{title}</h3>
+                <span className="px-3 py-1 text-sm font-medium rounded" style={{ background: 'rgba(17, 141, 255, 0.15)', color: '#118DFF' }}>
+                  {data.length} samples
+                </span>
+              </div>
+
+              {/* Fullscreen Controls */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleFullscreenZoomIn}
+                  className="p-2 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
+                  title="Zoom In"
+                >
+                  <ZoomIn size={20} />
+                </button>
+                <button
+                  onClick={handleFullscreenZoomOut}
+                  className="p-2 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
+                  title="Zoom Out"
+                >
+                  <ZoomOut size={20} />
+                </button>
+                <button
+                  onClick={handleFullscreenResetZoom}
+                  className="p-2 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
+                  title="Reset Zoom"
+                >
+                  <RotateCcw size={20} />
+                </button>
+                <div className="w-px h-6 bg-slate-700 mx-2" />
+                <button
+                  onClick={() => setIsFullscreen(false)}
+                  className="p-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-400 hover:text-red-300 transition-colors"
+                  title="Close Fullscreen (ESC)"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+
+            {/* Fullscreen Chart */}
+            <div className="h-[calc(100%-80px)]">
+              <Line ref={fullscreenChartRef} data={chartData} options={options} />
+            </div>
+
+            {/* Fullscreen Help text */}
+            <p className="absolute bottom-4 left-1/2 -translate-x-1/2 text-sm text-slate-500">
+              Drag to select region • Scroll to zoom • Ctrl+drag to pan • Press ESC to close
+            </p>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+
   return (
+    <>
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
@@ -265,10 +380,11 @@ export default function SignalChart({
             >
               <RotateCcw size={18} />
             </button>
+            <div className="w-px h-5 bg-slate-700 mx-1" />
             <button
-              onClick={handleFitData}
+              onClick={toggleFullscreen}
               className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white transition-colors"
-              title="Fit to Data"
+              title="Fullscreen"
             >
               <Maximize2 size={18} />
             </button>
@@ -292,5 +408,9 @@ export default function SignalChart({
         Drag to select region • Scroll to zoom • Ctrl+drag to pan
       </p>
     </motion.div>
+
+    {/* Fullscreen Modal */}
+    {renderFullscreenModal()}
+    </>
   );
 }

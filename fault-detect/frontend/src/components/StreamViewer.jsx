@@ -20,6 +20,7 @@ import {
   Play,
   Trash2,
   Download,
+  Save,
   Wifi,
   WifiOff,
   Activity,
@@ -32,7 +33,7 @@ ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler);
 const API_URL = 'http://localhost:8000';
 const BUFFER_SIZE = 300; // Show last 300 samples (~15 seconds at 20Hz)
 
-export default function StreamViewer({ onCapture, className = '' }) {
+export default function StreamViewer({ onCapture, onDownload, className = '' }) {
   const [values, setValues] = useState([]);
   const [times, setTimes] = useState([]);
   const [isConnected, setIsConnected] = useState(false);
@@ -151,6 +152,35 @@ export default function StreamViewer({ onCapture, className = '' }) {
       onCapture(values, times);
     }
   }, [values, times, onCapture]);
+
+  // Download as CSV and update parent stats
+  const downloadCSV = useCallback(() => {
+    if (values.length === 0) return;
+
+    // Create CSV content
+    const csvContent = values.map((v, i) => `${times[i].toFixed(6)},${v.toFixed(6)}`).join('\n');
+    const header = 'time,amplitude\n';
+    const blob = new Blob([header + csvContent], { type: 'text/csv;charset=utf-8;' });
+    
+    // Create filename with timestamp
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const filename = `live_stream_${timestamp}.csv`;
+    
+    // Download file
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    // Notify parent to update stats with this data
+    if (onDownload) {
+      onDownload(values, times, filename, stats);
+    }
+  }, [values, times, stats, onDownload]);
 
   // Status colors and labels
   const statusConfig = useMemo(() => ({
@@ -274,6 +304,16 @@ export default function StreamViewer({ onCapture, className = '' }) {
             title="Capture for Analysis"
           >
             <Download size={16} />
+          </button>
+          <button
+            onClick={downloadCSV}
+            disabled={values.length === 0}
+            className="flex items-center gap-1.5 px-3 py-2 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#10B981' }}
+            title="Download as CSV & Update Stats"
+          >
+            <Save size={16} />
+            <span className="text-xs font-medium">Save CSV</span>
           </button>
         </div>
       </div>
