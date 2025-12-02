@@ -239,18 +239,4 @@ Response:
 - [ ] User authentication
 - [ ] Cloud deployment (AWS/GCP)
 
----
-
-## 📝 License
-
-MIT License - Feel free to use for learning and projects!
-
----
-
-<div align="center">
-
-**Built with ❤️ for Predictive Maintenance**
-
-[Report Bug](https://github.com) · [Request Feature](https://github.com)
-
 </div>
