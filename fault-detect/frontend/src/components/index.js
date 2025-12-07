@@ -4,3 +4,4 @@ export { default as FFTChart, computeFFT } from './FFTChart';
 export { default as StreamViewer } from './StreamViewer';
 export { default as UploadAndRun } from './UploadAndRun';
 export { default as HistoryTable, useHistoryTable } from './HistoryTable';
+export { default as FeatureContributionCard, FeatureContributionCompact } from './FeatureContributionCard';

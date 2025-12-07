@@ -3,7 +3,7 @@
  * Main application dashboard with professional PowerBI-style design
  * Features: Navigation tabs, KPI metrics, data visualizations, responsive layout
  */
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Activity,
@@ -18,9 +18,9 @@ import {
   TrendingUp,
   Clock,
   Server,
-  Github,
   ExternalLink,
   ChevronRight,
+  ChevronDown,
   Sparkles,
   Play,
   FileText,
@@ -28,6 +28,7 @@ import {
   List,
   Download,
   Loader2,
+  Filter,
 } from 'lucide-react';
 import { Toaster, toast } from 'react-hot-toast';
 
@@ -49,6 +50,115 @@ const TABS = [
 // PowerBI color palette
 const PBI_BLUE = '#118DFF';
 const PBI_COLORS = ['#118DFF', '#12239E', '#E66C37', '#6B007B', '#E044A7'];
+
+// Time filter options
+const TIME_FILTERS = [
+  { id: '10min', label: 'Last 10 minutes', ms: 10 * 60 * 1000 },
+  { id: '1hour', label: 'Last 1 hour', ms: 60 * 60 * 1000 },
+  { id: 'today', label: 'Today', ms: null }, // Special case - start of day
+  { id: 'all', label: 'All Time', ms: null },
+];
+
+// Utility function to filter records by time window
+function filterByTimeWindow(records, filterId) {
+  if (!records || records.length === 0) return [];
+  if (filterId === 'all') return records;
+  
+  const now = new Date();
+  const filter = TIME_FILTERS.find(f => f.id === filterId);
+  
+  if (filterId === 'today') {
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    return records.filter(record => {
+      const recordDate = new Date(record.timestamp);
+      return recordDate >= startOfDay;
+    });
+  }
+  
+  if (filter?.ms) {
+    const cutoff = new Date(now.getTime() - filter.ms);
+    return records.filter(record => {
+      const recordDate = new Date(record.timestamp);
+      return recordDate >= cutoff;
+    });
+  }
+  
+  return records;
+}
+
+// Compute stats from filtered data
+function computeStatsFromHistory(history) {
+  if (!history || history.length === 0) {
+    return { totalAnalyses: 0, faultsDetected: 0, avgConfidence: 0 };
+  }
+  
+  const totalAnalyses = history.length;
+  const faultsDetected = history.filter(e => e.severity > 0).length;
+  const avgConfidence = history.reduce((sum, e) => sum + e.confidence, 0) / history.length;
+  
+  return {
+    totalAnalyses,
+    faultsDetected,
+    avgConfidence: Math.round(avgConfidence * 100),
+  };
+}
+
+// Time Filter Dropdown Component
+function TimeFilterDropdown({ value, onChange }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const selectedFilter = TIME_FILTERS.find(f => f.id === value) || TIME_FILTERS[3];
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-slate-800 border border-slate-700 hover:border-slate-600 transition-colors"
+      >
+        <Filter size={14} className="text-slate-400" />
+        <span className="text-xs font-medium text-slate-300">{selectedFilter.label}</span>
+        <ChevronDown size={14} className={`text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+      </button>
+      
+      <AnimatePresence>
+        {isOpen && (
+          <>
+            {/* Backdrop */}
+            <div 
+              className="fixed inset-0 z-10" 
+              onClick={() => setIsOpen(false)}
+            />
+            
+            {/* Dropdown */}
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.15 }}
+              className="absolute right-0 mt-1 z-20 min-w-[160px] py-1 rounded-lg bg-slate-800 border border-slate-700 shadow-xl"
+            >
+              {TIME_FILTERS.map((filter) => (
+                <button
+                  key={filter.id}
+                  onClick={() => {
+                    onChange(filter.id);
+                    setIsOpen(false);
+                  }}
+                  className={`w-full px-3 py-2 text-left text-xs font-medium transition-colors ${
+                    value === filter.id
+                      ? 'bg-blue-500/20 text-blue-400'
+                      : 'text-slate-300 hover:bg-slate-700/50'
+                  }`}
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
 
 // KPI Card component (PowerBI style)
 function KPICard({ icon: Icon, label, value, unit, trend, delay = 0 }) {
@@ -87,12 +197,20 @@ function KPICard({ icon: Icon, label, value, unit, trend, delay = 0 }) {
 // Architecture diagram component (PowerBI style)
 function ArchitectureDiagram() {
   const steps = [
-    { icon: Activity, label: 'Sensor', color: PBI_COLORS[0] },
-    { icon: BarChart3, label: 'React UI', color: PBI_COLORS[1] },
-    { icon: Server, label: 'FastAPI', color: PBI_COLORS[2] },
-    { icon: Cpu, label: 'ML Model', color: PBI_COLORS[3] },
-    { icon: AlertTriangle, label: 'Alert', color: PBI_COLORS[4] },
+    { icon: Radio, label: 'Sensor Input', subtitle: 'Live / Upload', color: PBI_COLORS[0] },
+    { icon: Activity, label: 'Preprocessing', subtitle: 'Filter & Normalize', color: PBI_COLORS[1] },
+    { icon: BarChart3, label: 'FFT & Features', subtitle: 'Time + Freq Domain', color: PBI_COLORS[2] },
+    { icon: Cpu, label: 'ML Engine', subtitle: 'RF + CNN', color: PBI_COLORS[3] },
+    { icon: Server, label: 'FastAPI', subtitle: 'API & Logic', color: PBI_COLORS[0] },
+    { icon: Zap, label: 'React UI', subtitle: 'Dashboard', color: PBI_COLORS[1] },
+    { icon: AlertTriangle, label: 'Alerts', subtitle: 'Reports & PDF', color: PBI_COLORS[4] },
   ];
+
+  const tags = {
+    'Streaming': ['Live Stream', 'SSE/WebSocket', 'Signal Buffering'],
+    'Analytics': ['Real-time FFT', 'Feature Extraction', 'Severity Logic'],
+    'Reliability': ['Health Checks', 'History Tracking', 'PDF Reports'],
+  };
 
   return (
     <motion.div
@@ -105,34 +223,42 @@ function ArchitectureDiagram() {
         <div className="w-1 h-5 rounded-sm" style={{ background: PBI_BLUE }} />
         <h3 className="text-sm font-semibold text-white uppercase tracking-wide">System Pipeline</h3>
       </div>
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between overflow-x-auto pb-2">
         {steps.map((step, idx) => (
           <React.Fragment key={step.label}>
-            <div className="flex flex-col items-center">
+            <div className="flex flex-col items-center min-w-[70px]">
               <div 
                 className="w-12 h-12 rounded-md flex items-center justify-center" 
                 style={{ background: `${step.color}20`, border: `1px solid ${step.color}40` }}
               >
                 <step.icon size={22} style={{ color: step.color }} />
               </div>
-              <span className="text-xs text-slate-500 mt-2 font-medium">{step.label}</span>
+              <span className="text-xs text-white mt-2 font-medium text-center">{step.label}</span>
+              <span className="text-[10px] text-slate-500 text-center">{step.subtitle}</span>
             </div>
             {idx < steps.length - 1 && (
-              <div className="flex-1 h-px bg-slate-700 mx-2" />
+              <div className="flex-1 h-px bg-slate-700 mx-1 min-w-[10px]" />
             )}
           </React.Fragment>
         ))}
       </div>
       
-      {/* Feature badges */}
-      <div className="flex flex-wrap gap-2 mt-5 pt-4 border-t border-slate-700/50">
-        {['Real-time FFT', 'SSE Streaming', 'Feature Extraction', 'PDF Reports', 'History Tracking'].map((feature) => (
-          <span
-            key={feature}
-            className="px-3 py-1.5 text-xs font-medium rounded bg-slate-800 text-slate-400"
-          >
-            {feature}
-          </span>
+      {/* Feature badges grouped by category */}
+      <div className="flex flex-wrap gap-4 mt-5 pt-4 border-t border-slate-700/50">
+        {Object.entries(tags).map(([category, items]) => (
+          <div key={category} className="flex items-center gap-2">
+            <span className="text-[10px] text-slate-500 uppercase tracking-wide">{category}:</span>
+            <div className="flex flex-wrap gap-1.5">
+              {items.map((tag) => (
+                <span
+                  key={tag}
+                  className="px-2 py-1 text-xs font-medium rounded bg-slate-800 text-slate-400"
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
+          </div>
         ))}
       </div>
     </motion.div>
@@ -260,6 +386,57 @@ function ResponseCard({ endpoint, result, dataSource, onClose }) {
               </div>
             </div>
 
+            {/* SHAP Explanation */}
+            {data.explanation && data.explanation.top_features && data.explanation.top_features.length > 0 && (
+              <div className="p-4 bg-amber-500/5 border border-amber-500/20 rounded-lg">
+                <div className="flex items-center gap-2 mb-3">
+                  <Sparkles size={14} className="text-amber-400" />
+                  <span className="text-xs font-semibold text-amber-400 uppercase tracking-wide">Why this diagnosis?</span>
+                  <span className="text-[10px] text-slate-500 ml-auto">{data.explanation.method || 'SHAP Analysis'}</span>
+                </div>
+                <div className="space-y-2">
+                  {data.explanation.top_features.slice(0, 5).map((feat, idx) => {
+                    const isPositive = feat.direction === 'positive' || feat.shap_value >= 0;
+                    const barWidth = Math.min((feat.abs_importance / (data.explanation.top_features[0]?.abs_importance || 1)) * 100, 100);
+                    const barColor = isPositive ? '#10B981' : '#EF4444';
+                    
+                    return (
+                      <div key={feat.name} className="flex items-center gap-3">
+                        <span className="text-xs text-slate-400 w-28 truncate" title={feat.name}>
+                          {feat.name.replace(/_/g, ' ')}
+                        </span>
+                        <div className="flex-1 h-2 rounded-full bg-slate-800 overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all duration-500"
+                            style={{ width: `${barWidth}%`, backgroundColor: barColor }}
+                          />
+                        </div>
+                        <span className={`text-xs font-mono w-16 text-right ${isPositive ? 'text-green-400' : 'text-red-400'}`}>
+                          {feat.shap_value >= 0 ? '+' : ''}{feat.shap_value.toFixed(3)}
+                        </span>
+                        <span className={`text-[10px] ${isPositive ? 'text-green-400/70' : 'text-red-400/70'}`}>
+                          {isPositive ? '↑' : '↓'}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="flex items-center gap-4 mt-3 pt-2 border-t border-slate-800 text-[10px] text-slate-500">
+                  <span className="flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-green-500" />
+                    Supports prediction
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-red-500" />
+                    Opposes prediction
+                  </span>
+                  {data.explanation.note && (
+                    <span className="ml-auto text-amber-400/70">{data.explanation.note}</span>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Features Grid */}
             <div>
               <p className="text-xs text-slate-500 uppercase tracking-wide mb-2">Extracted Features</p>
@@ -291,7 +468,7 @@ function ResponseCard({ endpoint, result, dataSource, onClose }) {
             <div>
               <p className="text-sm font-medium text-indigo-400">PDF Report Generated</p>
               <p className="text-xs text-slate-500">{data.message}</p>
-              <p className="text-xs text-slate-600 mt-1">Contains: Signal plot, FFT, PSD, Features table</p>
+              <p className="text-xs text-slate-600 mt-1">Contains: Signal plot, FFT, PSD, Features table, SHAP explanation</p>
             </div>
           </div>
         );
@@ -339,7 +516,7 @@ function ResponseCard({ endpoint, result, dataSource, onClose }) {
               <span>API: FastAPI Backend</span>
             </span>
             <span>•</span>
-            <span className="font-mono">http://localhost:8000{endpoint.path}</span>
+            <span className="font-mono">http://localhost:8001{endpoint.path}</span>
           </div>
           <span className="text-xs text-slate-600">
             {new Date().toLocaleTimeString()}
@@ -372,7 +549,7 @@ function APIEndpointsPanel({ signalData, signalSource, isLive = false }) {
   const [activeEndpoint, setActiveEndpoint] = useState(null);
   const [liveResults, setLiveResults] = useState(null);
   
-  const API_BASE = 'http://localhost:8000';
+  const API_BASE = 'http://localhost:8001';
   
   // Data source info based on what's available
   const getDataSourceInfo = () => {
@@ -731,15 +908,6 @@ function Header() {
           transition={{ duration: 0.4 }}
           className="flex items-center gap-3"
         >
-          <a
-            href="https://github.com"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="p-2 rounded-md bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700 transition-all"
-          >
-            <Github size={18} />
-          </a>
-          <div className="h-6 w-px bg-slate-700" />
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-green-500/10 border border-green-500/20">
             <span className="w-2 h-2 rounded-full bg-green-500" />
             <span className="text-xs font-medium text-green-400">Online</span>
@@ -788,6 +956,7 @@ function TabNav({ activeTab, onTabChange }) {
 // Main App component
 export default function App() {
   const [activeTab, setActiveTab] = useState('analyze');
+  const [timeFilter, setTimeFilter] = useState('all');
   const [stats, setStats] = useState({
     totalAnalyses: 0,
     faultsDetected: 0,
@@ -805,6 +974,16 @@ export default function App() {
   });
   
   const { addEntry } = useHistoryTable();
+
+  // Filter history data based on time filter (memoized for performance)
+  const filteredHistory = useMemo(() => {
+    return filterByTimeWindow(historyData, timeFilter);
+  }, [historyData, timeFilter]);
+
+  // Compute filtered stats (memoized for performance)
+  const filteredStats = useMemo(() => {
+    return computeStatsFromHistory(filteredHistory);
+  }, [filteredHistory]);
 
   // Update uptime
   useEffect(() => {
@@ -949,25 +1128,38 @@ export default function App() {
           isLive={currentSignal.isLive}
         />
 
-        {/* KPI Stats Grid */}
+        {/* KPI Stats Grid with Time Filter */}
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <div className="w-1 h-5 rounded-sm" style={{ background: PBI_BLUE }} />
+            <h3 className="text-sm font-semibold text-white uppercase tracking-wide">Analytics Overview</h3>
+            {timeFilter !== 'all' && (
+              <span className="px-2 py-0.5 text-[10px] font-medium rounded bg-blue-500/20 text-blue-400">
+                Filtered
+              </span>
+            )}
+          </div>
+          <TimeFilterDropdown value={timeFilter} onChange={setTimeFilter} />
+        </div>
+
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
           <KPICard
             icon={BarChart3}
             label="Total Analyses"
-            value={stats.totalAnalyses}
+            value={filteredStats.totalAnalyses}
             delay={0.1}
           />
           <KPICard
             icon={AlertTriangle}
             label="Faults Detected"
-            value={stats.faultsDetected}
-            trend={stats.totalAnalyses > 0 ? Math.round((stats.faultsDetected / stats.totalAnalyses) * 100) : 0}
+            value={filteredStats.faultsDetected}
+            trend={filteredStats.totalAnalyses > 0 ? Math.round((filteredStats.faultsDetected / filteredStats.totalAnalyses) * 100) : 0}
             delay={0.15}
           />
           <KPICard
             icon={Sparkles}
             label="Avg Confidence"
-            value={stats.avgConfidence}
+            value={filteredStats.avgConfidence}
             unit="%"
             delay={0.2}
           />
@@ -986,9 +1178,9 @@ export default function App() {
           transition={{ duration: 0.4, delay: 0.2 }}
           className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-5"
         >
-          <FaultDistributionChart history={historyData} />
-          <SeverityDonut history={historyData} />
-          <AnalyticsTrendChart history={historyData} />
+          <FaultDistributionChart history={filteredHistory} />
+          <SeverityDonut history={filteredHistory} />
+          <AnalyticsTrendChart history={filteredHistory} />
         </motion.div>
 
         {/* Architecture Diagram (shown on analyze tab) */}

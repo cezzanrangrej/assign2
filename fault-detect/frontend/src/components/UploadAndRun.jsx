@@ -1,7 +1,7 @@
 /**
  * UploadAndRun.jsx
  * File upload, signal analysis, and diagnosis interface
- * Features: Drag-drop upload, preview, analysis, confidence gauge, PDF download
+ * Features: Drag-drop upload, preview, analysis, confidence gauge, SHAP explanation, PDF download
  */
 import React, { useState, useCallback, useRef } from 'react';
 import axios from 'axios';
@@ -26,8 +26,9 @@ import {
 } from 'lucide-react';
 import SignalChart from './SignalChart';
 import FFTChart, { computeFFT } from './FFTChart';
+import FeatureContributionCard from './FeatureContributionCard';
 
-const API_URL = 'http://localhost:8000';
+const API_URL = 'http://localhost:8001';
 
 // Confidence gauge component (PowerBI style)
 function ConfidenceGauge({ value, color }) {
@@ -475,6 +476,16 @@ export default function UploadAndRun({ onDiagnosisComplete, className = '' }) {
               </button>
             </div>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* SHAP Explanation Card - Shown after diagnosis */}
+      <AnimatePresence>
+        {result && result.explanation && (
+          <FeatureContributionCard
+            explanation={result.explanation}
+            predictedClass={result.prediction}
+          />
         )}
       </AnimatePresence>
     </motion.div>

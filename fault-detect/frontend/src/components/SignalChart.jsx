@@ -49,6 +49,7 @@ export default function SignalChart({
   const chartRef = useRef(null);
   const fullscreenChartRef = useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [zoomState, setZoomState] = useState(null); // Persist zoom state
 
   // Handle ESC key to close fullscreen
   useEffect(() => {
@@ -141,6 +142,14 @@ export default function SignalChart({
           enabled: true,
           mode: 'x',
           modifierKey: 'ctrl',
+          onPanComplete: ({ chart }) => {
+            const newZoomState = {
+              min: chart.scales.x.min,
+              max: chart.scales.x.max,
+            };
+            setZoomState(newZoomState);
+            onZoomChange?.(newZoomState);
+          },
         },
         zoom: {
           wheel: {
@@ -158,10 +167,12 @@ export default function SignalChart({
           },
           mode: 'x',
           onZoomComplete: ({ chart }) => {
-            onZoomChange?.({
+            const newZoomState = {
               min: chart.scales.x.min,
               max: chart.scales.x.max,
-            });
+            };
+            setZoomState(newZoomState);
+            onZoomChange?.(newZoomState);
           },
         },
       },
@@ -191,6 +202,8 @@ export default function SignalChart({
     scales: {
       x: {
         display: true,
+        min: zoomState?.min,
+        max: zoomState?.max,
         title: {
           display: true,
           text: 'Time (samples)',
@@ -228,7 +241,7 @@ export default function SignalChart({
     animation: {
       duration: 300,
     },
-  }), [annotations, onZoomChange]);
+  }), [annotations, onZoomChange, zoomState]);
 
   // Zoom control handlers
   const handleZoomIn = () => {
@@ -241,11 +254,23 @@ export default function SignalChart({
 
   const handleResetZoom = () => {
     chartRef.current?.resetZoom();
+    setZoomState(null); // Clear saved zoom state
   };
 
   const handleFitData = () => {
     chartRef.current?.resetZoom();
+    setZoomState(null); // Clear saved zoom state
   };
+
+  // Restore zoom state when chart updates
+  useEffect(() => {
+    if (chartRef.current && zoomState) {
+      const chart = chartRef.current;
+      chart.options.scales.x.min = zoomState.min;
+      chart.options.scales.x.max = zoomState.max;
+      chart.update('none');
+    }
+  }, [data, zoomState]);
 
   const handleFullscreenZoomIn = () => {
     fullscreenChartRef.current?.zoom(1.2);

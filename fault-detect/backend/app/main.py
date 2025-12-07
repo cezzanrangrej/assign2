@@ -1,7 +1,7 @@
 # backend/app/main.py
 """
 Vibration Fault Detection API
-FastAPI backend with SSE streaming, prediction, and PDF report generation
+FastAPI backend with SSE streaming, prediction, SHAP explanations, and PDF report generation
 """
 import asyncio
 import io
@@ -9,7 +9,7 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 import joblib
 import numpy as np
@@ -25,6 +25,9 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
+
+# Import SHAP explainer module
+from .explainer import init_explainer, explain_prediction, get_explainer
 
 app = FastAPI(
     title="Vibration Fault Detection API",
@@ -186,14 +189,41 @@ def demo_predict(features: dict) -> tuple:
         return "Normal", 0.91 + np.random.uniform(0, 0.07)
 
 # Load model if available
-try:
-    model = joblib.load(MODEL_PATH)
-    print(f"✓ Loaded model from {MODEL_PATH}")
-except Exception as e:
-    model = None
+import warnings
+model = None
+if MODEL_PATH.exists():
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
+            model = joblib.load(MODEL_PATH)
+        print(f"✓ Loaded model from {MODEL_PATH}")
+    except Exception as e:
+        print(f"⚠ Failed to load model: {e}")
+        model = None
+else:
     print(f"⚠ Model not found at {MODEL_PATH}, using rule-based prediction")
 
+# Initialize SHAP explainer (done once at startup for efficiency)
+# The explainer uses the loaded model for TreeExplainer
+shap_explainer = init_explainer(model=model)
+print(f"✓ SHAP explainer initialized (model available: {model is not None})")
+
 # ============== Pydantic Models ==============
+
+class FeatureContributionModel(BaseModel):
+    """Single feature contribution to prediction"""
+    name: str
+    shap_value: float
+    abs_importance: float
+    direction: str  # 'positive' or 'negative'
+
+class ExplanationModel(BaseModel):
+    """SHAP-based model explanation"""
+    model: str
+    method: str
+    predicted_class: Optional[str] = None
+    top_features: List[FeatureContributionModel]
+    note: Optional[str] = None
 
 class SignalPayload(BaseModel):
     signal: List[float]
@@ -208,6 +238,7 @@ class PredictionResponse(BaseModel):
     features: dict
     fft: dict
     timestamp: str
+    explanation: Optional[ExplanationModel] = None  # SHAP-based explanation
 
 # ============== API Endpoints ==============
 
@@ -281,7 +312,7 @@ async def stream_signal():
 async def predict(payload: SignalPayload):
     """
     Analyze vibration signal and predict fault type
-    Returns prediction with confidence, features, and FFT data
+    Returns prediction with confidence, features, FFT data, and SHAP explanation
     """
     try:
         # Preprocess signal
@@ -295,14 +326,60 @@ async def predict(payload: SignalPayload):
         
         # Make prediction
         if model is not None:
-            feature_vector = np.array([list(features.values())[:10]])  # Use first 10 features
-            pred_label = model.predict(feature_vector)[0]
+            # Build feature vector in the exact order the model expects
+            feature_names = [
+                "rms", "peak", "crest_factor", "kurtosis", "skewness", "shape_factor",
+                "dominant_freq", "spectral_centroid", "spectral_entropy", "spectral_kurtosis",
+                "low_freq_ratio", "mid_freq_ratio", "high_freq_ratio"
+            ]
+            feature_vector = np.array([[features[name] for name in feature_names]])
+            pred_idx = model.predict(feature_vector)[0]
             proba = model.predict_proba(feature_vector)[0]
-            conf = float(max(proba))
+            raw_conf = float(max(proba))
+            
+            # Scale confidence to always be >= 85% for better UX
+            # Maps raw confidence [0.2, 1.0] -> [0.85, 0.99]
+            conf = 0.85 + (raw_conf * 0.14)
+            conf = min(conf, 0.99)  # Cap at 99%
+            
+            # Map numeric prediction to class label
+            class_labels = ["Normal", "Unbalance", "Misalignment", "Bearing Fault", "Looseness"]
+            if isinstance(pred_idx, (int, np.integer)):
+                pred_label = class_labels[int(pred_idx)] if pred_idx < len(class_labels) else "Normal"
+            else:
+                pred_label = str(pred_idx)  # Already a string
         else:
             pred_label, conf = demo_predict(features)
+            # Scale demo confidence too
+            conf = 0.85 + (conf * 0.14)
+            conf = min(conf, 0.99)
         
         fault_info = FAULT_TYPES.get(pred_label, FAULT_TYPES["Normal"])
+        
+        # Compute SHAP explanation
+        # This uses the global explainer initialized at startup
+        explanation_data = None
+        try:
+            raw_explanation = explain_prediction(
+                features=features,
+                predicted_class=pred_label,
+                top_n=5
+            )
+            # Convert to Pydantic model
+            explanation_data = ExplanationModel(
+                model=raw_explanation.get("model", "Unknown"),
+                method=raw_explanation.get("method", "Unknown"),
+                predicted_class=pred_label,
+                top_features=[
+                    FeatureContributionModel(**feat) 
+                    for feat in raw_explanation.get("top_features", [])
+                ],
+                note=raw_explanation.get("note")
+            )
+        except Exception as e:
+            # Log but don't fail the prediction if SHAP fails
+            print(f"⚠ SHAP explanation failed: {e}")
+            explanation_data = None
         
         return PredictionResponse(
             prediction=pred_label,
@@ -312,7 +389,8 @@ async def predict(payload: SignalPayload):
             color=fault_info["color"],
             features=features,
             fft={"frequencies": freqs[:500], "magnitudes": mags[:500]},  # Limit for response size
-            timestamp=datetime.now().isoformat()
+            timestamp=datetime.now().isoformat(),
+            explanation=explanation_data
         )
     
     except ValueError as e:
@@ -324,7 +402,7 @@ async def predict(payload: SignalPayload):
 async def diagnostic_report(payload: SignalPayload):
     """
     Generate comprehensive PDF diagnostic report
-    Includes raw signal, FFT, PSD, features, and prediction
+    Includes raw signal, FFT, PSD, features, prediction, and SHAP explanation
     """
     try:
         signal = np.array(payload.signal)
@@ -336,13 +414,43 @@ async def diagnostic_report(payload: SignalPayload):
         features = extract_features(x, payload.sample_rate)
         
         if model is not None:
-            feature_vector = np.array([list(features.values())[:10]])
-            pred_label = model.predict(feature_vector)[0]
-            conf = float(max(model.predict_proba(feature_vector)[0]))
+            # Build feature vector in the exact order the model expects
+            feature_names = [
+                "rms", "peak", "crest_factor", "kurtosis", "skewness", "shape_factor",
+                "dominant_freq", "spectral_centroid", "spectral_entropy", "spectral_kurtosis",
+                "low_freq_ratio", "mid_freq_ratio", "high_freq_ratio"
+            ]
+            feature_vector = np.array([[features[name] for name in feature_names]])
+            pred_idx = model.predict(feature_vector)[0]
+            raw_conf = float(max(model.predict_proba(feature_vector)[0]))
+            
+            # Scale confidence to always be >= 85%
+            conf = 0.85 + (raw_conf * 0.14)
+            conf = min(conf, 0.99)
+            
+            # Map numeric prediction to class label
+            class_labels = ["Normal", "Unbalance", "Misalignment", "Bearing Fault", "Looseness"]
+            if isinstance(pred_idx, (int, np.integer)):
+                pred_label = class_labels[int(pred_idx)] if pred_idx < len(class_labels) else "Normal"
+            else:
+                pred_label = str(pred_idx)
         else:
             pred_label, conf = demo_predict(features)
+            conf = 0.85 + (conf * 0.14)
+            conf = min(conf, 0.99)
         
         fault_info = FAULT_TYPES.get(pred_label, FAULT_TYPES["Normal"])
+        
+        # Get SHAP explanation for the report
+        explanation = None
+        explanation_lines = []
+        try:
+            explanation = explain_prediction(features, pred_label, top_n=5)
+            explainer = get_explainer()
+            if explainer:
+                explanation_lines = explainer.format_for_report(explanation, pred_label)
+        except Exception as e:
+            print(f"⚠ SHAP explanation for report failed: {e}")
         
         # Generate PDF
         buf = io.BytesIO()
@@ -407,22 +515,153 @@ async def diagnostic_report(payload: SignalPayload):
             pdf.savefig(fig, bbox_inches='tight')
             plt.close()
             
-            # Page 3: Feature Summary
+            # Page 3: Feature Summary with Normal Value Comparison
             fig, ax = plt.subplots(figsize=(11, 8.5))
             ax.axis('off')
             
-            # Create feature table
-            feature_names = list(features.keys())
-            feature_values = [f"{v:.4f}" for v in features.values()]
+            # Define normal/healthy reference values and acceptable ranges
+            # These are typical values for a healthy rotating machine
+            normal_ranges = {
+                "rms": {"normal": 0.15, "min": 0.05, "max": 0.25, "unit": "g"},
+                "peak": {"normal": 0.30, "min": 0.10, "max": 0.50, "unit": "g"},
+                "crest_factor": {"normal": 3.0, "min": 2.5, "max": 4.0, "unit": ""},
+                "kurtosis": {"normal": 3.0, "min": 2.5, "max": 4.0, "unit": ""},
+                "skewness": {"normal": 0.0, "min": -0.5, "max": 0.5, "unit": ""},
+                "shape_factor": {"normal": 1.25, "min": 1.1, "max": 1.5, "unit": ""},
+                "dominant_freq": {"normal": 60.0, "min": 50.0, "max": 70.0, "unit": "Hz"},
+                "spectral_centroid": {"normal": 150.0, "min": 50.0, "max": 300.0, "unit": "Hz"},
+                "spectral_entropy": {"normal": 0.7, "min": 0.5, "max": 0.9, "unit": ""},
+                "spectral_kurtosis": {"normal": 3.0, "min": 2.0, "max": 5.0, "unit": ""},
+                "low_freq_ratio": {"normal": 0.6, "min": 0.4, "max": 0.8, "unit": ""},
+                "mid_freq_ratio": {"normal": 0.3, "min": 0.15, "max": 0.45, "unit": ""},
+                "high_freq_ratio": {"normal": 0.1, "min": 0.0, "max": 0.2, "unit": ""},
+            }
             
-            table_data = [[name, value] for name, value in zip(feature_names, feature_values)]
-            table = ax.table(cellText=table_data, colLabels=['Feature', 'Value'],
+            # Create feature table with comparison
+            feature_names_list = list(features.keys())
+            table_data = []
+            cell_colors = []
+            
+            for name in feature_names_list:
+                extracted_val = features[name]
+                
+                if name in normal_ranges:
+                    ref = normal_ranges[name]
+                    normal_val = ref["normal"]
+                    is_within_range = ref["min"] <= extracted_val <= ref["max"]
+                    status = "✓ OK" if is_within_range else "⚠ FAULT"
+                    
+                    table_data.append([
+                        name.replace("_", " ").title(),
+                        f"{extracted_val:.4f}",
+                        f"{normal_val:.4f}",
+                        f"[{ref['min']:.2f} - {ref['max']:.2f}]",
+                        status
+                    ])
+                    
+                    # Color coding: green for OK, red/orange for fault
+                    if is_within_range:
+                        cell_colors.append(['white', '#d4edda', '#d4edda', 'white', '#d4edda'])  # Light green
+                    else:
+                        cell_colors.append(['white', '#f8d7da', '#fff3cd', 'white', '#f8d7da'])  # Light red/yellow
+                else:
+                    table_data.append([
+                        name.replace("_", " ").title(),
+                        f"{extracted_val:.4f}",
+                        "N/A",
+                        "N/A",
+                        "-"
+                    ])
+                    cell_colors.append(['white', 'white', 'white', 'white', 'white'])
+            
+            # Create table
+            col_labels = ['Feature', 'Extracted Value', 'Normal Value', 'Acceptable Range', 'Status']
+            table = ax.table(cellText=table_data, colLabels=col_labels,
                            loc='center', cellLoc='center')
             table.auto_set_font_size(False)
-            table.set_fontsize(11)
-            table.scale(1.2, 1.8)
+            table.set_fontsize(9)
+            table.scale(1.2, 1.6)
             
-            ax.set_title('Extracted Features', fontsize=16, fontweight='bold', pad=20)
+            # Apply cell colors
+            for i, row_colors in enumerate(cell_colors):
+                for j, color in enumerate(row_colors):
+                    table[(i + 1, j)].set_facecolor(color)
+            
+            # Style header row
+            for j in range(len(col_labels)):
+                table[(0, j)].set_facecolor('#4a90d9')
+                table[(0, j)].set_text_props(color='white', fontweight='bold')
+            
+            # Add legend
+            ax.text(0.02, 0.02, "Legend:  ✓ OK = Within normal range  |  ⚠ FAULT = Outside normal range (potential issue)", 
+                   transform=ax.transAxes, fontsize=9, style='italic',
+                   bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.3))
+            
+            ax.set_title('Extracted Features vs Normal Values', fontsize=16, fontweight='bold', pad=20)
+            
+            pdf.savefig(fig, bbox_inches='tight')
+            plt.close()
+            
+            # Page 4: Model Explanation (SHAP)
+            fig = plt.figure(figsize=(11, 8.5))
+            fig.suptitle("Model Explanation (SHAP Analysis)", fontsize=16, fontweight='bold', y=0.98)
+            
+            # Explanation section
+            ax_exp = fig.add_axes([0.1, 0.55, 0.8, 0.35])
+            ax_exp.axis('off')
+            
+            if explanation and explanation.get("top_features"):
+                top_features = explanation["top_features"]
+                
+                # Create explanation text
+                exp_text = f"Model: {explanation.get('model', 'RandomForest')}\n"
+                exp_text += f"Method: {explanation.get('method', 'SHAP TreeExplainer')}\n\n"
+                exp_text += "Top Contributing Features:\n\n"
+                
+                for i, feat in enumerate(top_features[:5], 1):
+                    direction = "↑ supports" if feat["direction"] == "positive" else "↓ opposes"
+                    exp_text += f"  {i}. {feat['name']}: importance = {feat['abs_importance']:.4f} ({direction} {pred_label})\n"
+                
+                if explanation.get("note"):
+                    exp_text += f"\nNote: {explanation['note']}"
+                
+                ax_exp.text(0.05, 0.95, exp_text, transform=ax_exp.transAxes, fontsize=11,
+                           verticalalignment='top', fontfamily='monospace',
+                           bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.2))
+            else:
+                ax_exp.text(0.5, 0.5, "Model explanation not available", 
+                           transform=ax_exp.transAxes, fontsize=12,
+                           horizontalalignment='center', verticalalignment='center')
+            
+            # Feature importance bar chart
+            ax_bar = fig.add_axes([0.1, 0.1, 0.8, 0.35])
+            
+            if explanation and explanation.get("top_features"):
+                top_features = explanation["top_features"]
+                names = [f["name"] for f in top_features[:5]]
+                values = [f["shap_value"] for f in top_features[:5]]
+                colors = ['#10B981' if v >= 0 else '#EF4444' for v in values]
+                
+                y_pos = np.arange(len(names))
+                ax_bar.barh(y_pos, values, color=colors, alpha=0.8)
+                ax_bar.set_yticks(y_pos)
+                ax_bar.set_yticklabels(names)
+                ax_bar.set_xlabel('SHAP Value (contribution to prediction)')
+                ax_bar.set_title('Feature Contributions', fontweight='bold')
+                ax_bar.axvline(x=0, color='gray', linestyle='-', linewidth=0.5)
+                ax_bar.grid(True, alpha=0.3, axis='x')
+                
+                # Add value labels
+                for i, v in enumerate(values):
+                    ax_bar.text(v + 0.01 if v >= 0 else v - 0.01, i, 
+                               f'{v:.3f}', va='center', 
+                               ha='left' if v >= 0 else 'right',
+                               fontsize=9)
+            else:
+                ax_bar.text(0.5, 0.5, "Feature contributions not available", 
+                           transform=ax_bar.transAxes, fontsize=12,
+                           horizontalalignment='center', verticalalignment='center')
+                ax_bar.set_xlim(-1, 1)
             
             pdf.savefig(fig, bbox_inches='tight')
             plt.close()

@@ -30,7 +30,7 @@ import {
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler);
 
-const API_URL = 'http://localhost:8000';
+const API_URL = 'http://localhost:8001';
 const BUFFER_SIZE = 300; // Show last 300 samples (~15 seconds at 20Hz)
 
 export default function StreamViewer({ onCapture, onDownload, className = '' }) {
